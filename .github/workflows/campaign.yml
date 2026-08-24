@@ -1,2 +1,27 @@
-env:
-  OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+name: Campaign Update
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Test OpenAI API
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          curl https://api.openai.com/v1/responses \
+            -H "Content-Type: application/json" \
+            -H "Authorization: Bearer $OPENAI_API_KEY" \
+            -d '{
+              "model": "gpt-5.6",
+              "input": "Reply with exactly: CAMPAIGN CONNECTION OK"
+            }'
