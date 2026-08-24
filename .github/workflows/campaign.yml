@@ -1,40 +1,59 @@
 name: Campaign Update
 
 on:
-  workflow_dispatch:
+  issue_comment:
+    types: [created]
 
 permissions:
-  contents: write
+  contents: read
+  issues: write
 
 jobs:
   test:
+    if: >
+      github.event.issue.pull_request == null &&
+      github.event.comment.user.login == 'plethora92'
+
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Test OpenAI API
+      - name: Test OpenAI with campaign input
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          CAMPAIGN_INPUT: ${{ github.event.comment.body }}
         run: |
-          curl https://api.openai.com/v1/responses \
+          RESPONSE=$(curl -s https://api.openai.com/v1/responses \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $OPENAI_API_KEY" \
-            -d '{
-              "model": "gpt-5.6",
-              "input": "Reply with exactly: CAMPAIGN CONNECTION OK"
-            }'
+            -d "$(jq -n \
+              --arg input "$CAMPAIGN_INPUT" \
+              '{
+                model: "gpt-5.6",
+                input: ("Campaign input: " + $input + "\n\nReply briefly confirming that you received it.")
+              }')")
 
-      - name: Test repository write
+          echo "$RESPONSE" | jq .
+
+          TEXT=$(echo "$RESPONSE" | jq -r '
+            [.output[]?.content[]? |
+             select(.type == "output_text") |
+             .text] |
+            join("\n")
+          ')
+
+          echo "GPT RESPONSE:"
+          echo "$TEXT"
+
+          echo "$TEXT" > response.txt
+
+      - name: Reply to the campaign input
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
-          echo "# Campaign Automation Test" > automation-test.md
-          echo "" >> automation-test.md
-          echo "GitHub Actions can write to this repository." >> automation-test.md
+          gh issue comment "$ISSUE_NUMBER" \
+            --body "🤖 Campaign automation received your input and successfully contacted OpenAI.
 
-          git config user.name "github-actions[bot]"
-          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          **GPT response:**
 
-          git add automation-test.md
-          git commit -m "test: verify automated repository write"
-          git push
+          $(cat response.txt)"
