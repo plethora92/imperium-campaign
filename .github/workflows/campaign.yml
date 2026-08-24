@@ -9,7 +9,7 @@ permissions:
   issues: write
 
 jobs:
-  test:
+  analyze:
     if: >
       github.event.issue.pull_request == null &&
       github.event.comment.user.login == 'plethora92'
@@ -17,46 +17,139 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
+      - name: Checkout campaign repository
         uses: actions/checkout@v4
 
-      - name: Test OpenAI with campaign input
+      - name: Analyze campaign update
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
           CAMPAIGN_INPUT: ${{ github.event.comment.body }}
         run: |
-          RESPONSE=$(curl -s https://api.openai.com/v1/responses \
-            -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $OPENAI_API_KEY" \
-            -d "$(jq -n \
-              --arg input "$CAMPAIGN_INPUT" \
-              '{
-                model: "gpt-5.6",
-                input: ("Campaign input: " + $input + "\n\nReply briefly confirming that you received it.")
-              }')")
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
 
-          echo "$RESPONSE" | jq .
+          input_text = os.environ["CAMPAIGN_INPUT"]
 
-          TEXT=$(echo "$RESPONSE" | jq -r '
-            [.output[]?.content[]? |
-             select(.type == "output_text") |
-             .text] |
-            join("\n")
-          ')
+          files = {
+              "NARRATIVE": "Canon/Imperium_Campaign_Narrative_Ledger_FINAL_CLEAN.md",
+              "PLAYER": "Canon/Imperium_Campaign_Player_Stats_Traits_Skills_Ledger_FINAL_CLEAN.md",
+              "NPC": "Canon/Imperium_Campaign_NPC_Ledger_FINAL_CLEAN.md",
+          }
 
-          echo "GPT RESPONSE:"
-          echo "$TEXT"
+          # For this first test, provide the canonical ledgers to GPT
+          # as reference material. We are NOT writing anything back.
+          ledger_text = {}
 
-          echo "$TEXT" > response.txt
+          for name, path in files.items():
+              with open(path, "r", encoding="utf-8") as f:
+                  ledger_text[name] = f.read()
 
-      - name: Reply to the campaign input
+          prompt = f"""
+          You are the Canon Auditor for the Imperium Campaign.
+
+          Your task is to analyze a proposed campaign update against the
+          existing canonical ledgers.
+
+          IMPORTANT RULES:
+
+          1. Do NOT invent campaign facts.
+          2. Do NOT silently resolve contradictions.
+          3. Preserve existing canon unless the new input explicitly
+             establishes a new state.
+          4. Historical information remains historical; do not erase it.
+          5. Raw dice rolls and ephemeral execution mechanics are not
+             persistent state.
+          6. Narrative continuity belongs in the Narrative Ledger.
+          7. Persistent player stats, traits, skills, equipment and player
+             state belong in the Player Ledger.
+          8. NPC biography, stats, skills, traits, relevance and relationship
+             status belong in the NPC Ledger.
+          9. If the input conflicts with established canon and the conflict
+             cannot be resolved from explicit later canon, mark it as
+             CANON CONFLICT.
+          10. Do NOT modify any ledger in this stage.
+
+          Return exactly these sections:
+
+          CLASSIFICATION
+          NARRATIVE: YES/NO
+          PLAYER: YES/NO
+          NPC: YES/NO
+
+          PROPOSED CHANGES
+          Explain only the changes actually supported by the input.
+
+          CANON CHECK
+          NONE
+          or
+          CANON CONFLICT:
+          Explain the exact conflict.
+
+          AFFECTED RECORDS
+          Identify the relevant existing people, events, projects, stats,
+          traits, skills, relationships or other canonical records.
+
+          STATUS
+          READY FOR APPROVAL
+          or
+          HUMAN REVIEW REQUIRED
+
+          CAMPAIGN UPDATE:
+          {input_text}
+
+          === NARRATIVE LEDGER ===
+          {ledger_text["NARRATIVE"]}
+
+          === PLAYER LEDGER ===
+          {ledger_text["PLAYER"]}
+
+          === NPC LEDGER ===
+          {ledger_text["NPC"]}
+          """
+
+          payload = {
+              "model": "gpt-5.6",
+              "input": prompt
+          }
+
+          request = urllib.request.Request(
+              "https://api.openai.com/v1/responses",
+              data=json.dumps(payload).encode("utf-8"),
+              headers={
+                  "Content-Type": "application/json",
+                  "Authorization": "Bearer " + os.environ["OPENAI_API_KEY"]
+              },
+              method="POST"
+          )
+
+          with urllib.request.urlopen(request) as response:
+              result = json.load(response)
+
+          text = ""
+
+          for item in result.get("output", []):
+              for content in item.get("content", []):
+                  if content.get("type") == "output_text":
+                      text += content.get("text", "")
+
+          with open("analysis.txt", "w", encoding="utf-8") as f:
+              f.write(text)
+
+          print(text)
+          PY
+
+      - name: Post analysis to campaign issue
         env:
           GH_TOKEN: ${{ github.token }}
           ISSUE_NUMBER: ${{ github.event.issue.number }}
         run: |
           gh issue comment "$ISSUE_NUMBER" \
-            --body "🤖 Campaign automation received your input and successfully contacted OpenAI.
+            --body "## 🧠 Campaign Canon Analysis
 
-          **GPT response:**
+          $(cat analysis.txt)
 
-          $(cat response.txt)"
+          ---
+          **No canonical ledger was modified.**
+          "
