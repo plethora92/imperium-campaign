@@ -17,6 +17,9 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
       - name: Test OpenAI with campaign input
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
